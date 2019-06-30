@@ -1,161 +1,151 @@
 import Link from 'next/link';
 import Head from '../components/head';
 import Nav from '../components/nav';
-
-let BITBOXCli = require('bitbox-cli/lib/bitboxcli').default;
-let BITBOX = new BITBOXCli({
-  protocol: 'http',
-  host: '127.0.0.1',
-  port: 8332,
-  username: '',
-  password: ''
-});
-
-BITBOX.Mnemonic.generateMnemonic(256);
-
+let BITBOXCli = require('bitbox-cli/lib/bitbox-cli').default;
+let BITBOX = new BITBOXCli();
 
 class Index extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      version: '',
-      protocolversion: '',
-      walletversion: '',
-      balance: '',
-      blocks: '',
-      timeoffset: '',
-      connections: '',
-      proxy: '',
-      difficulty: '',
-      testnet: '',
-      keypoololdest: '',
-      keypoolsize: '',
-      paytxfee: '',
-      relayfee: '',
-      errors: ''
+      mnemonic: '',
+      lang: '',
+      hex: '',
+      txid: '',
+      masterHDNode: ''
     }
   }
 
   componentDidMount() {
-    BITBOX.Control.getInfo()
-    .then((result) => {
+    let langs = [
+      'english',
+      'chinese_simplified',
+      'chinese_traditional',
+      'korean',
+      'japanese',
+      'french',
+      'italian',
+      'spanish'
+    ]
+
+    let lang = langs[Math.floor(Math.random()*langs.length)];
+
+    // create 256 bit BIP39 mnemonic
+    let mnemonic = BITBOX.Mnemonic.generate(256, BITBOX.Mnemonic.wordLists()[lang])
+
+    // root seed buffer
+    let rootSeed = BITBOX.Mnemonic.toSeed(mnemonic);
+
+    // master HDNode
+    let masterHDNode = BITBOX.HDNode.fromSeed(rootSeed, 'bitcoincash');
+
+    // HDNode of BIP44 account
+    let account = BITBOX.HDNode.derivePath(masterHDNode, "m/44'/145'/0'");
+
+    // derive the first external change address HDNode which is going to spend utxo
+    let change = BITBOX.HDNode.derivePath(account, "0/0");
+
+    // get the cash address
+    let cashAddress = BITBOX.HDNode.toCashAddress(change);
+
+    let hex;
+
+    BITBOX.Address.utxo(cashAddress).then((result) => {
+      if(!result[0]) {
+        return;
+      }
+
+      // instance of transaction builder
+      let transactionBuilder = new BITBOX.TransactionBuilder('bitcoincash');
+      // original amount of satoshis in vin
+      let originalAmount = result[0].satoshis;
+
+      // index of vout
+      let vout = result[0].vout;
+
+      // txid of vout
+      let txid = result[0].txid;
+
+      // add input with txid and index of vout
+      transactionBuilder.addInput(txid, vout);
+
+      // get byte count to calculate fee. paying 1 sat/byte
+      let byteCount = BITBOX.BitcoinCash.getByteCount({ P2PKH: 1 }, { P2PKH: 1 });
+      // 192
+      // amount to send to receiver. It's the original amount - 1 sat/byte for tx size
+      let sendAmount = originalAmount - byteCount;
+
+      // add output w/ address and amount to send
+      transactionBuilder.addOutput(cashAddress, sendAmount);
+
+      // keypair
+      let keyPair = BITBOX.HDNode.toKeyPair(change);
+
+      // sign w/ HDNode
+      let redeemScript;
+      transactionBuilder.sign(0, keyPair, redeemScript, transactionBuilder.hashTypes.SIGHASH_ALL, originalAmount);
+
+      // build tx
+      let tx = transactionBuilder.build();
+      // output rawhex
+      hex = tx.toHex();
+
       this.setState({
-        version: result.version,
-        protocolversion: result.protocolversion,
-        walletversion: result.walletversion,
-        balance: result.balance,
-        blocks: result.blocks,
-        timeoffset: result.timeoffset,
-        connections: result.connections,
-        proxy: result.proxy,
-        difficulty: result.difficulty,
-        testnet: result.testnet,
-        keypoololdest: result.keypoololdest,
-        keypoolsize: result.keypoolsize,
-        paytxfee: result.paytxfee,
-        relayfee:result.relayfee,
-        errors: result.errors
+        hex: hex
       });
-    }, (err) => { console.log(err);
+
+      // sendRawTransaction to running BCH node
+      BITBOX.RawTransactions.sendRawTransaction(hex).then((result) => {
+        this.setState({
+          txid: result
+        });
+      }, (err) => {
+        console.log(err);
+      });
+    }, (err) => {
+      console.log(err);
+    });
+
+    this.setState({
+      mnemonic: mnemonic,
+      lang: lang,
+      masterHDNode: masterHDNode
     });
   }
 
   render() {
+    let addresses = [];
+    for(let i = 0; i < 10; i++) {
+      if(this.state.masterHDNode) {
+        let account = this.state.masterHDNode.derivePath(`m/44'/145'/0'/0/${i}`);
+        addresses.push(<li key={i}>m/44&rsquo;/145&rsquo;/0&rsquo;/0/{i}: {BITBOX.HDNode.toCashAddress(account)}</li>);
+      }
+    }
+
     return (
       <div className="App">
-	  	<Head />
-		<Nav />
         <header className="App-header">
+          <img src='static/logo.png' className="App-logo" alt="logo" />
           <h1 className="App-title">Hello BITBOX</h1>
         </header>
         <div className='App-content'>
-          <h2><code>getinfo</code></h2>
+          <h2>BIP44 $BCH Wallet</h2>
+          <h3>256 bit {this.state.lang} BIP39 Mnemonic:</h3> <p>{this.state.mnemonic}</p>
+          <h3>BIP44 Account</h3>
+          <p>
+            <code>
+            "m/44'/145'/0'"
+            </code>
+          </p>
+          <h3>BIP44 external change addresses</h3>
           <ul>
-            <li>
-                version: {this.state.version},
-            </li>
-            <li>
-                protocolversion: {this.state.protocolversion},
-            </li>
-            <li>
-                walletversion: {this.state.walletversion},
-            </li>
-            <li>
-                balance: {this.state.balance},
-            </li>
-            <li>
-                blocks: {this.state.blocks},
-            </li>
-            <li>
-                timeoffset: {this.state.timeoffset},
-            </li>
-            <li>
-                connections: {this.state.connections},
-            </li>
-            <li>
-                proxy: {this.state.proxy},
-            </li>
-            <li>
-                difficulty: {this.state.difficulty},
-            </li>
-            <li>
-                testnet: {this.state.testnet},
-            </li>
-            <li>
-                keypoololdest: {this.state.keypoololdest},
-            </li>
-            <li>
-                keypoolsize: {this.state.keypoolsize},
-            </li>
-            <li>
-                paytxfee: {this.state.paytxfee},
-            </li>
-            <li>
-                relayfee:{this.state.relayfee},
-            </li>
-            <li>
-                errors: {this.state.errors}
-            </li>
-            </ul>
+            {addresses}
+          </ul>
+          <h3>Transaction raw hex</h3>
+          <p>{this.state.hex}</p>
+          <h3>Transaction ID</h3>
+          <p>{this.state.txid}</p>
         </div>
-		<style jsx>{`
-			.App {
-  				text-align: center;
-			}
-
-			.App-logo {
-  				height: 80px;
-			}
-
-			.App-header {
-  				background-color: #2d3e50;
-  				height: 150px;
-  				padding: 20px;
-  				color: white;
-			}
-
-			.App-title {
-  				font-size: 1.5em;
-  				font-weight: 400;
-			}
-
-			.App-intro {
-  				font-size: large;
-			}
-
-			.App-content {
-  				padding-left: 20px;
-			}
-
-			.App ul, .App h2 {
-  				text-align: left;
-			}
-
-			@keyframes App-logo-spin {
-  				from { transform: rotate(0deg); }
-  				to { transform: rotate(360deg); }
-			}
-		`}</style>
       </div>
     );
   }
